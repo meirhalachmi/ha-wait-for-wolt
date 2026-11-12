@@ -3,10 +3,10 @@
   "name": "Wait for Wolt",
   "codeowners": ["@selfish"],
   "config_flow": true,
-  "documentation": "https://github.com/selfish/ha-wait-for-wolt",
+  "documentation": "https://github.com/meirhalachmi/ha-wait-for-wolt",
   "integration_type": "service",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/selfish/ha-wait-for-wolt/issues",
+  "issue_tracker": "https://github.com/meirhalachmi/ha-wait-for-wolt/issues",
   "requirements": [],
-  "version": "0.1.0b4"
+  "version": "0.2.0"
 }

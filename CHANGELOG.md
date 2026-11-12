@@ -6,7 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Release numbers follow semantic major/minor/patch intent; prereleases use PEP 440
 spellings such as `0.1.0b1` so Home Assistant and Python tooling agree.
 
-## [Unreleased]
+## [0.2.0] — 2026-11-12
+
+Fork: one fixed set of entities instead of a device per purchase.
+
+- One "Wolt" device per account with fixed sensors: `status` (`none` when idle),
+  `eta`, `active_orders` (with a scalar summary of each purchase) and
+  `courier_distance`. Several purchases at once are aggregated on the one that
+  arrives first.
+- Courier and venue map points are `geo_location` entities that exist only while
+  a purchase is active and never enter the entity registry; show them with
+  `geo_location_sources: [wait_for_wolt]` on a map card.
+- Status takes the most advanced of the order list, the purchase-tracking
+  details and the courier's movement (left the venue → on the way, near home or
+  dropoff event → arriving), so it no longer stays `pending` for the whole ride.
+  Only the order list can end a purchase.
+- Setup deletes the per-purchase devices and entities of earlier versions, and
+  any device except the account can be deleted from the UI.
+
+## [Unreleased upstream]
 
 - Prefer validated `order_details.venue_coordinates` for the opt-in pickup pin.
   Public venue JSON-LD remains a fallback when order geometry is unavailable;
