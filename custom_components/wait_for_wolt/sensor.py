@@ -1,11 +1,13 @@
-"""Sensor platform for Wolt order tracker."""
+"""Sensor platform for Wolt order tracker.
+
+One fixed set of account-level sensors summarizes every active purchase, so a
+purchase never creates its own device or entities.
+"""
 
 from __future__ import annotations
 
 import logging
-import re
-from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from datetime import datetime, timedelta
 from typing import Any
 
 import homeassistant.helpers.config_validation as cv
@@ -14,12 +16,13 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
+    SensorStateClass,
 )
 from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
-from homeassistant.const import CONF_NAME
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import CONF_NAME, UnitOfLength
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -35,157 +38,46 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import WoltDataUpdateCoordinator
-from .facts import item_count, money, summary_total
+from .model import OrderView, lead_order
+from .status import ORDER_STATUS_OPTIONS
+from .status import _parse_eta as _parse_eta  # noqa: F401  (re-export)
+from .status import extract_order_eta as extract_order_eta  # noqa: F401
+from .status import normalize_order_status as normalize_order_status  # noqa: F401
 
 _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(minutes=5)
 
-ORDER_STATUS_OPTIONS = [
-    "pending",
-    "preparing",
-    "ready_for_pickup",
-    "picked_up",
-    "on_the_way",
-    "arriving",
-    "delivered",
-    "cancelled",
-    "failed",
-    "unknown",
-]
+NO_ORDER = "none"
+ACCOUNT_SENSOR_KEYS = ("status", "eta", "active_orders", "courier_distance")
 
-ORDER_STATUS_DESCRIPTION = SensorEntityDescription(
+STATUS_DESCRIPTION = SensorEntityDescription(
     key="status",
-    translation_key="order_status",
+    translation_key="status",
     device_class=SensorDeviceClass.ENUM,
-    options=ORDER_STATUS_OPTIONS,
+    options=[NO_ORDER, *ORDER_STATUS_OPTIONS],
+    icon="mdi:moped",
 )
-
-ORDER_ETA_DESCRIPTION = SensorEntityDescription(
+ETA_DESCRIPTION = SensorEntityDescription(
     key="eta",
-    translation_key="order_eta",
+    translation_key="eta",
     device_class=SensorDeviceClass.TIMESTAMP,
+    icon="mdi:clock-outline",
 )
-
-
-def _contains_non_negated_status(value: str, *fragments: str) -> bool:
-    """Match fragments without treating negative status phrases as that state."""
-    return any(
-        fragment in value
-        and re.search(
-            rf"(?:^|_)(?:(?:not(?:_(?:yet|currently))?|non)_|un){re.escape(fragment)}",
-            value,
-        )
-        is None
-        for fragment in fragments
-    )
-
-
-def _raw_status(order: dict[str, Any]) -> str | None:
-    """Extract a scalar status while respecting authoritative telemetry."""
-    status_type: Any = None
-    if "telemetry" in order:
-        telemetry = order["telemetry"]
-        status_type = (
-            telemetry.get("order_status_type") if isinstance(telemetry, dict) else None
-        )
-        if str(status_type).upper() != "IN_PROGRESS":
-            return str(status_type) if status_type is not None else None
-    elif "order_status_type" in order:
-        status_type = order["order_status_type"]
-        if str(status_type).upper() != "IN_PROGRESS":
-            return str(status_type) if status_type is not None else None
-
-    status = order.get("status")
-    if isinstance(status, dict):
-        status = status.get("value") or status.get("text") or status.get("label")
-    if status is None:
-        status = status_type
-    if str(status_type).upper() == "IN_PROGRESS" and status is not None:
-        display_status = re.sub(r"[^a-z0-9]+", "_", str(status).strip().lower()).strip(
-            "_"
-        )
-        if _contains_non_negated_status(
-            display_status,
-            "delivered",
-            "completed",
-            "finished",
-            "cancel",
-            "fail",
-            "reject",
-            "refund",
-        ):
-            return str(status_type)
-    return str(status) if status is not None else None
-
-
-def normalize_order_status(order: dict[str, Any]) -> str:
-    """Map unstable Wolt status text to a fixed Home Assistant enum."""
-    raw = _raw_status(order)
-    if not raw:
-        return "unknown"
-    value = re.sub(r"[^a-z0-9]+", "_", raw.casefold()).strip("_")
-    if _contains_non_negated_status(value, "cancel", "refunded"):
-        return "cancelled"
-    if _contains_non_negated_status(value, "fail", "reject", "declin"):
-        return "failed"
-    if _contains_non_negated_status(value, "delivered", "completed", "finished"):
-        return "delivered"
-    if _contains_non_negated_status(value, "arriv", "nearby", "almost_there"):
-        return "arriving"
-    if _contains_non_negated_status(
-        value, "picked_up", "courier_pickup", "delivery_pickup"
-    ):
-        return "picked_up"
-    if _contains_non_negated_status(value, "ready", "awaiting_pickup"):
-        return "ready_for_pickup"
-    if _contains_non_negated_status(value, "prepar", "production", "restaurant"):
-        return "preparing"
-    if _contains_non_negated_status(
-        value, "pending", "received", "created", "in_progress", "accepted"
-    ):
-        return "pending"
-    if _contains_non_negated_status(
-        value, "on_the_way", "en_route", "courier_delivery", "delivery"
-    ):
-        return "on_the_way"
-    return "unknown"
-
-
-def _parse_eta(value: Any) -> datetime | None:
-    """Parse an ETA without guessing from human-readable duration text."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, dict):
-        for key in ("$date", "date", "value", "timestamp", "max", "end"):
-            if key in value and (parsed := _parse_eta(value[key])) is not None:
-                return parsed
-        return None
-    if isinstance(value, int | float):
-        timestamp = value / 1000 if value > 10_000_000_000 else value
-        # Explicit ETAs must be plausible wall-clock timestamps. Small values
-        # are durations/range bounds, not Unix timestamps.
-        if not 1_577_836_800 <= timestamp <= 4_102_444_800:
-            return None
-        try:
-            return datetime.fromtimestamp(timestamp, UTC)
-        except OSError, OverflowError, ValueError:
-            return None
-    if not isinstance(value, str):
-        return None
-    parsed = dt_util.parse_datetime(value)
-    return parsed if parsed is not None and parsed.tzinfo is not None else None
-
-
-def extract_order_eta(order: dict[str, Any]) -> datetime | None:
-    """Extract the first explicit timestamp-shaped ETA."""
-    for key in ("delivery_eta", "estimated_delivery_time", "eta"):
-        if (parsed := _parse_eta(order.get(key))) is not None:
-            return parsed
-    estimate = order.get("client_pre_estimate")
-    if isinstance(estimate, dict):
-        return _parse_eta(estimate.get("delivery_eta"))
-    return None
+ACTIVE_ORDERS_DESCRIPTION = SensorEntityDescription(
+    key="active_orders",
+    translation_key="active_orders",
+    state_class=SensorStateClass.MEASUREMENT,
+    icon="mdi:package-variant",
+)
+COURIER_DISTANCE_DESCRIPTION = SensorEntityDescription(
+    key="courier_distance",
+    translation_key="courier_distance",
+    device_class=SensorDeviceClass.DISTANCE,
+    native_unit_of_measurement=UnitOfLength.KILOMETERS,
+    suggested_display_precision=2,
+    icon="mdi:map-marker-distance",
+)
 
 
 PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA.extend(
@@ -229,7 +121,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up coordinator-backed order sensors and public venue sensors."""
+    """Set up the fixed account sensors and public venue sensors."""
     data = {**entry.data, **entry.options}
     runtime = entry.runtime_data
     coordinator = runtime.coordinator
@@ -262,57 +154,30 @@ async def async_setup_entry(
             update_before_add=True,
         )
 
-    known_order_ids: set[str] = set()
-    from .tracking import async_setup_tracking
+    async_add_entities(
+        [
+            WoltStatusSensor(coordinator, entry.entry_id),
+            WoltEtaSensor(coordinator, entry.entry_id),
+            WoltActiveOrdersSensor(coordinator, entry.entry_id),
+            WoltCourierDistanceSensor(coordinator, entry.entry_id),
+        ]
+    )
 
-    async_setup_tracking(hass, entry, async_add_entities)
 
-    @callback
-    def async_add_new_orders() -> None:
-        registry = er.async_get(hass)
-        candidate_order_ids = set(coordinator.data.active_order_ids)
-        for order_id in coordinator.data.orders:
-            if any(
-                _owned_registry_entity(
-                    registry,
-                    entry.entry_id,
-                    unique_id,
-                )
-                is not None
-                for unique_id in (
-                    f"wolt_{order_id}",
-                    _order_unique_id(entry.entry_id, order_id, "delivery"),
-                    _order_unique_id(entry.entry_id, order_id, "status"),
-                    _order_unique_id(entry.entry_id, order_id, "eta"),
-                )
-            ):
-                candidate_order_ids.add(order_id)
+def account_device_info(entry_id: str) -> DeviceInfo:
+    """The one device every Wolt entity of an account belongs to."""
+    return DeviceInfo(
+        identifiers={(DOMAIN, entry_id)},
+        manufacturer="Wolt",
+        model="Account",
+        name="Wolt",
+        entry_type=DeviceEntryType.SERVICE,
+    )
 
-        new_order_ids = candidate_order_ids - known_order_ids
-        if not new_order_ids:
-            return
-        known_order_ids.update(new_order_ids)
-        entities: list[SensorEntity] = []
-        for order_id in sorted(new_order_ids):
-            entities.extend(
-                (
-                    WoltOrderStatusSensor(coordinator, entry.entry_id, order_id),
-                    WoltOrderEtaSensor(coordinator, entry.entry_id, order_id),
-                    *(
-                        WoltOrderFactSensor(coordinator, entry.entry_id, order_id, kind)
-                        for kind in (
-                            "item_count",
-                            "total",
-                            "delivery_fee",
-                            "service_fee",
-                        )
-                    ),
-                )
-            )
-        async_add_entities(entities)
 
-    async_add_new_orders()
-    entry.async_on_unload(coordinator.async_add_listener(async_add_new_orders))
+def account_unique_id(entry_id: str, key: str) -> str:
+    """Scope account sensors to one config entry."""
+    return f"{entry_id}_account_{key}"
 
 
 def _owned_registry_entity(
@@ -326,177 +191,117 @@ def _owned_registry_entity(
     return entity if entity is not None and entity.config_entry_id == entry_id else None
 
 
-def _order_unique_id(entry_id: str, order_id: str, key: str) -> str:
-    """Scope purchase entities to one config entry."""
-    return f"{entry_id}_{order_id}_{key}"
-
-
 def _venue_unique_id(entry_id: str, slug: str) -> str:
     """Scope venue entities to one config entry."""
     return f"{entry_id}_venue_{slug}"
 
 
-class WoltOrderEntity(CoordinatorEntity[WoltDataUpdateCoordinator], SensorEntity):
-    """Base for a privacy-safe Wolt order entity."""
+class WoltAccountSensor(CoordinatorEntity[WoltDataUpdateCoordinator], SensorEntity):
+    """Base for a fixed sensor that summarizes all active purchases."""
 
     _attr_attribution = "Data provided by Wolt"
     _attr_has_entity_name = True
 
-    def __init__(
-        self,
-        coordinator: WoltDataUpdateCoordinator,
-        entry_id: str,
-        order_id: str,
-    ) -> None:
+    def __init__(self, coordinator: WoltDataUpdateCoordinator, entry_id: str) -> None:
         super().__init__(coordinator)
-        self.order_id = order_id
-        self._entry_id = entry_id
+        self._attr_unique_id = account_unique_id(entry_id, self.entity_description.key)
+        self._attr_device_info = account_device_info(entry_id)
 
     @property
-    def available(self) -> bool:
-        """Remain available while the order exists in the shared snapshot."""
-        return super().available and self.order_id in self.coordinator.data.orders
+    def _views(self) -> list[OrderView]:
+        return list(self.coordinator.data.views.values())
 
     @property
-    def _order_data(self) -> dict[str, Any]:
-        """Merge the order summary with richer active tracking details."""
-        summary = self.coordinator.data.orders.get(self.order_id, {})
-        details = (
-            self.coordinator.data.details.get(self.order_id, {})
-            if self.order_id in self.coordinator.data.active_order_ids
-            else {}
-        )
-        return {**details, **summary}
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Group status and ETA under a stable per-purchase device."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, f"{self._entry_id}:{self.order_id}")},
-            manufacturer="Wolt",
-            model="Delivery order",
-            name=self._device_name,
-        )
-
-    @property
-    def _device_name(self) -> str:
-        from .facts import venue_name
-
-        label = venue_name(self.coordinator.data.orders.get(self.order_id, {}))
-        return f"Wolt order · {label}" if label else "Wolt order"
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Restore the venue label used by existing cards and notifications."""
-        from .facts import venue_name
-
-        label = venue_name(self.coordinator.data.orders.get(self.order_id, {}))
-        return {"venue_name": label} if label else {}
+    def _lead(self) -> OrderView | None:
+        return lead_order(self._views)
 
 
-class WoltOrderStatusSensor(WoltOrderEntity):
-    """Stable enum status for one Wolt purchase."""
+class WoltStatusSensor(WoltAccountSensor):
+    """Status of the purchase that arrives first, or none."""
 
-    entity_description = ORDER_STATUS_DESCRIPTION
-    _attr_icon = "mdi:package-variant"
-
-    def __init__(
-        self,
-        coordinator: WoltDataUpdateCoordinator,
-        entry_id: str,
-        order_id: str,
-    ) -> None:
-        super().__init__(coordinator, entry_id, order_id)
-        self._attr_unique_id = _order_unique_id(entry_id, order_id, "status")
+    entity_description = STATUS_DESCRIPTION
 
     @property
     def native_value(self) -> str:
-        """Return a fixed automation-safe enum value."""
-        return normalize_order_status(self._order_data)
+        lead = self._lead
+        return lead.status if lead is not None else NO_ORDER
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Publish verified timeline instants, not localized date guesses."""
-        details = (
-            self.coordinator.data.details.get(self.order_id, {})
-            if self.order_id in self.coordinator.data.active_order_ids
-            else {}
-        )
-        paid_at = _parse_eta(details.get("payment_time"))
-        attrs = super().extra_state_attributes
-        if paid_at is not None:
-            attrs["payment_time"] = paid_at.isoformat()
+        lead = self._lead
+        if lead is None:
+            return {}
+        attrs: dict[str, Any] = {"order_id": lead.order_id}
+        venues = [view.venue for view in self._views if view.venue]
+        if lead.venue:
+            attrs["venue"] = lead.venue
+        if venues:
+            attrs["venues"] = " + ".join(venues)
         return attrs
 
 
-class WoltOrderEtaSensor(WoltOrderEntity):
-    """Typed ETA timestamp for one Wolt purchase."""
+class WoltEtaSensor(WoltAccountSensor):
+    """Earliest estimated arrival among active purchases."""
 
-    entity_description = ORDER_ETA_DESCRIPTION
-    _attr_icon = "mdi:clock-outline"
-
-    def __init__(
-        self,
-        coordinator: WoltDataUpdateCoordinator,
-        entry_id: str,
-        order_id: str,
-    ) -> None:
-        super().__init__(coordinator, entry_id, order_id)
-        self._attr_unique_id = _order_unique_id(entry_id, order_id, "eta")
+    entity_description = ETA_DESCRIPTION
 
     @property
     def native_value(self) -> datetime | None:
-        """Return an aware timestamp or unknown when Wolt provides no explicit ETA."""
-        if self.order_id not in self.coordinator.data.active_order_ids:
-            return None
-        from .tracking import driver_fields
-
-        return extract_order_eta(
-            driver_fields(self.coordinator.data.details.get(self.order_id, {}))
-        ) or extract_order_eta(self._order_data)
-
-
-class WoltOrderFactSensor(WoltOrderEntity):
-    """Typed purchase facts; no raw item, payment, or address objects."""
-
-    def __init__(
-        self,
-        coordinator: WoltDataUpdateCoordinator,
-        entry_id: str,
-        order_id: str,
-        kind: str,
-    ) -> None:
-        super().__init__(coordinator, entry_id, order_id)
-        self.kind = kind
-        self._attr_unique_id = _order_unique_id(entry_id, order_id, kind)
-        self._attr_translation_key = "order_" + kind
-        self._attr_device_class = (
-            None if kind == "item_count" else SensorDeviceClass.MONETARY
-        )
-        self._attr_entity_registry_enabled_default = kind == "item_count"
-
-    def _amount(self) -> tuple[Decimal | None, str | None]:
-        if self.kind == "total":
-            return summary_total(self.coordinator.data.orders.get(self.order_id, {}))
-        details = (
-            self.coordinator.data.details.get(self.order_id, {})
-            if self.order_id in self.coordinator.data.active_order_ids
-            else {}
-        )
-        return money(
-            details,
-            {"delivery_fee": "delivery_price", "service_fee": "service_fee"}[self.kind],
-        )
+        lead = self._lead
+        return lead.eta if lead is not None else None
 
     @property
-    def native_value(self) -> int | Decimal | None:
-        if self.kind == "item_count":
-            return item_count(self.coordinator.data.orders.get(self.order_id, {}))
-        return self._amount()[0]
+    def extra_state_attributes(self) -> dict[str, Any]:
+        lead = self._lead
+        if lead is None or lead.eta is None:
+            return {}
+        remaining = (lead.eta - dt_util.utcnow()).total_seconds()
+        return {
+            "order_id": lead.order_id,
+            "minutes_to_arrival": max(0, round(remaining / 60)),
+        }
+
+
+class WoltActiveOrdersSensor(WoltAccountSensor):
+    """Number of active purchases, with a scalar summary of each."""
+
+    entity_description = ACTIVE_ORDERS_DESCRIPTION
 
     @property
-    def native_unit_of_measurement(self) -> str | None:
-        return None if self.kind == "item_count" else self._amount()[1]
+    def native_value(self) -> int:
+        return len(self._views)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        lead = self._lead
+        ordered = sorted(self._views, key=lambda view: view is not lead)
+        return {"orders": [view.as_attribute() for view in ordered]}
+
+
+class WoltCourierDistanceSensor(WoltAccountSensor):
+    """Distance from home of the nearest courier carrying one of our orders."""
+
+    entity_description = COURIER_DISTANCE_DESCRIPTION
+
+    @property
+    def _nearest(self) -> OrderView | None:
+        located = [v for v in self._views if v.courier_distance_km is not None]
+        return min(located, key=lambda v: v.courier_distance_km, default=None)
+
+    @property
+    def native_value(self) -> float | None:
+        nearest = self._nearest
+        return nearest.courier_distance_km if nearest is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        nearest = self._nearest
+        if nearest is None:
+            return {}
+        attrs: dict[str, Any] = {"order_id": nearest.order_id}
+        if nearest.venue:
+            attrs["venue"] = nearest.venue
+        return attrs
 
 
 class WoltVenueSensor(SensorEntity):

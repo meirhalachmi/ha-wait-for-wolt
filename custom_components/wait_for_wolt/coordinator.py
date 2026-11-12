@@ -23,7 +23,16 @@ from .api import (
 )
 from .const import DOMAIN
 from .facts import pickup_coordinates
-from .privacy import location_enabled
+from .model import (
+    AT_VENUE_KM,
+    LEFT_VENUE_KM,
+    OrderView,
+    build_view,
+    coordinates,
+    driver_fields,
+    km_between,
+)
+from .privacy import location_allowed, location_enabled
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,6 +48,7 @@ class WoltCoordinatorData:
     active_order_ids: frozenset[str]
     details: dict[str, dict[str, Any]]
     pickups: dict[str, dict[str, Any]] = field(default_factory=dict)
+    views: dict[str, OrderView] = field(default_factory=dict)
 
 
 class WoltDataUpdateCoordinator(DataUpdateCoordinator[WoltCoordinatorData]):
@@ -62,6 +72,12 @@ class WoltDataUpdateCoordinator(DataUpdateCoordinator[WoltCoordinatorData]):
         self.entry = entry
         self._rich_retry: dict[str, tuple[float, int]] = {}
         self._rich_tracking_warning_logged = False
+        # Purchases whose courier was seen at the venue, and those that left it.
+        self._at_venue: set[str] = set()
+        self._left_venue: set[str] = set()
+        # Last rich details per active purchase, so a skipped or failed details
+        # call does not make the courier vanish from the map for a cycle.
+        self._last_details: dict[str, dict[str, Any]] = {}
 
     async def _async_update_data(self) -> WoltCoordinatorData:
         """Fetch orders and details, translating failures for Home Assistant."""
@@ -134,7 +150,58 @@ class WoltDataUpdateCoordinator(DataUpdateCoordinator[WoltCoordinatorData]):
         self.update_interval = (
             ACTIVE_UPDATE_INTERVAL if active_order_ids else IDLE_UPDATE_INTERVAL
         )
-        return WoltCoordinatorData(orders, active_order_ids, details, pickups)
+        return WoltCoordinatorData(
+            orders,
+            active_order_ids,
+            details,
+            pickups,
+            self._build_views(orders, active_order_ids, details, pickups),
+        )
+
+    def _build_views(
+        self,
+        orders: dict[str, dict[str, Any]],
+        active_order_ids: frozenset[str],
+        details: dict[str, dict[str, Any]],
+        pickups: dict[str, dict[str, Any]],
+    ) -> dict[str, OrderView]:
+        """Project active purchases, remembering when a courier left the venue."""
+        self._at_venue &= active_order_ids
+        self._left_venue &= active_order_ids
+        self._last_details = {
+            order_id: details.get(order_id, self._last_details.get(order_id, {}))
+            for order_id in active_order_ids
+        }
+        home = (self.hass.config.latitude, self.hass.config.longitude)
+        views: dict[str, OrderView] = {}
+        for order_id in sorted(active_order_ids):
+            detail = self._last_details[order_id]
+            driver = driver_fields(detail)
+            venue = coordinates(
+                pickups.get(order_id, {}).get("latitude"),
+                pickups.get(order_id, {}).get("longitude"),
+            )
+            if "latitude" in driver and venue:
+                km = km_between(
+                    (driver["latitude"], driver["longitude"]),
+                    (venue["latitude"], venue["longitude"]),
+                )
+                if km is not None and km <= AT_VENUE_KM:
+                    self._at_venue.add(order_id)
+                elif (
+                    km is not None and km > LEFT_VENUE_KM and order_id in self._at_venue
+                ):
+                    self._left_venue.add(order_id)
+            views[order_id] = build_view(
+                order_id,
+                orders[order_id],
+                detail,
+                pickup=pickups.get(order_id),
+                home=home,
+                left_venue=order_id in self._left_venue,
+                allow_location=location_allowed(self.entry, order_id, "delivery"),
+            )
+        return views
 
     @staticmethod
     def order_id(order: dict[str, Any]) -> str | None:

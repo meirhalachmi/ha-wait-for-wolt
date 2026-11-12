@@ -57,9 +57,10 @@
   },
   "entity": {
     "sensor": {
-      "order_status": {
+      "status": {
         "name": "Status",
         "state": {
+          "none": "No order",
           "pending": "Pending",
           "preparing": "Preparing",
           "ready_for_pickup": "Ready for pickup",
@@ -72,20 +73,14 @@
           "unknown": "Unknown"
         }
       },
-      "order_eta": {
-        "name": "Estimated arrival"
+      "eta": {
+        "name": "ETA"
       },
-      "order_item_count": {
-        "name": "Item count"
+      "active_orders": {
+        "name": "Active orders"
       },
-      "order_total": {
-        "name": "Order total"
-      },
-      "order_delivery_fee": {
-        "name": "Delivery fee"
-      },
-      "order_service_fee": {
-        "name": "Service fee"
+      "courier_distance": {
+        "name": "Courier distance"
       }
     }
   }

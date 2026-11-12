@@ -57,35 +57,30 @@
   },
   "entity": {
     "sensor": {
-      "order_status": {
-        "name": "מצב",
+      "status": {
+        "name": "סטטוס",
         "state": {
-          "pending": "ההזמנה התקבלה",
+          "none": "אין הזמנה",
+          "pending": "ממתינה",
           "preparing": "בהכנה",
           "ready_for_pickup": "מוכנה לאיסוף",
           "picked_up": "נאספה",
           "on_the_way": "בדרך",
-          "arriving": "מגיעה בקרוב",
+          "arriving": "מגיעה",
           "delivered": "נמסרה",
           "cancelled": "בוטלה",
           "failed": "נכשלה",
           "unknown": "לא ידוע"
         }
       },
-      "order_eta": {
-        "name": "הגעה משוערת"
+      "eta": {
+        "name": "זמן הגעה"
       },
-      "order_item_count": {
-        "name": "מספר פריטים"
+      "active_orders": {
+        "name": "הזמנות פעילות"
       },
-      "order_total": {
-        "name": "סך ההזמנה"
-      },
-      "order_delivery_fee": {
-        "name": "דמי משלוח"
-      },
-      "order_service_fee": {
-        "name": "דמי שירות"
+      "courier_distance": {
+        "name": "מרחק השליח"
       }
     }
   }

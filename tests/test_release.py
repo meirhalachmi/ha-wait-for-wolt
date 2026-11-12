@@ -15,8 +15,8 @@ from scripts.check_version import ROOT, check_version
 
 def test_project_versions_agree() -> None:
     """Keep the Home Assistant manifest and project metadata synchronized."""
-    assert check_version() == "0.1.0b4"
-    assert check_version("v0.1.0b4") == "0.1.0b4"
+    assert check_version() == "0.2.0"
+    assert check_version("v0.2.0") == "0.2.0"
 
 
 def test_release_tag_must_match_version() -> None:

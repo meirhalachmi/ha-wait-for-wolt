@@ -8,6 +8,8 @@ import homeassistant.helpers.config_validation as cv
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
@@ -21,7 +23,7 @@ from .const import (
 )
 from .coordinator import WoltDataUpdateCoordinator, WoltRuntimeData
 
-PLATFORMS = [Platform.SENSOR]
+PLATFORMS = [Platform.SENSOR, Platform.GEO_LOCATION]
 CONFIG_SCHEMA = cv.platform_only_config_schema(DOMAIN)
 
 
@@ -40,6 +42,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from .privacy import migrate_location_consent
 
     migrate_location_consent(hass, entry)
+    remove_purchase_entities(hass, entry)
     if not entry.data.get(CONF_CLIENT_ID):
         hass.config_entries.async_update_entry(
             entry,
@@ -78,6 +81,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
         raise
     return True
+
+
+def remove_purchase_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the per-purchase devices and entities of earlier versions.
+
+    Only the account sensors and configured venue sensors are kept; map points
+    have no registry entries at all.
+    """
+    from .sensor import ACCOUNT_SENSOR_KEYS, account_unique_id
+
+    keep = {account_unique_id(entry.entry_id, key) for key in ACCOUNT_SENSOR_KEYS}
+    venue_prefix = f"{entry.entry_id}_venue_"
+    entities = er.async_get(hass)
+    for item in er.async_entries_for_config_entry(entities, entry.entry_id):
+        uid = item.unique_id
+        if uid in keep or uid.startswith(venue_prefix) or uid.startswith("wolt_venue_"):
+            continue
+        entities.async_remove(item.entity_id)
+    devices = dr.async_get(hass)
+    for device in dr.async_entries_for_config_entry(devices, entry.entry_id):
+        if (DOMAIN, entry.entry_id) not in device.identifiers:
+            devices.async_update_device(
+                device.id, remove_config_entry_id=entry.entry_id
+            )
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: ConfigEntry, device: dr.DeviceEntry
+) -> bool:
+    """Let the user delete any device except the account itself."""
+    del hass
+    return (DOMAIN, entry.entry_id) not in device.identifiers
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

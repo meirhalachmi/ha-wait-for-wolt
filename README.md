@@ -1,5 +1,22 @@
 # Wait for Wolt
 
+> **Fork of [selfish/ha-wait-for-wolt](https://github.com/selfish/ha-wait-for-wolt).**
+> Instead of a device and entities per purchase, this fork keeps one fixed "Wolt"
+> device per account: `sensor.wolt_status` (`none` when idle), `sensor.wolt_eta`,
+> `sensor.wolt_active_orders` (each purchase in its `orders` attribute) and
+> `sensor.wolt_courier_distance`. Several purchases at once are aggregated on the
+> one that arrives first. Courier and venue pins are `geo_location` entities that
+> exist only during a purchase:
+>
+> ```yaml
+> type: map
+> geo_location_sources: [wait_for_wolt]
+> entities: [zone.home]
+> ```
+>
+> Upgrading deletes the per-purchase devices of earlier versions. See
+> [CHANGELOG](CHANGELOG.md) 0.2.0. The rest of this README describes upstream.
+
 **Wait for Wolt** is an unofficial Home Assistant custom integration for
 tracking active Wolt deliveries. It creates automation-friendly sensors for an
 order's normalized status and estimated arrival time, refreshes browser-derived
