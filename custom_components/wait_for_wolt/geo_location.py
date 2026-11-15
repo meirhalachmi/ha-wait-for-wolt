@@ -22,6 +22,7 @@ from .coordinator import WoltDataUpdateCoordinator
 from .model import OrderView, km_between
 
 KINDS = ("courier", "venue")
+COURIER = "שליח"  # Hebrew for "courier"; the map marker shows its first letter
 
 
 class WoltMapPoint(CoordinatorEntity[WoltDataUpdateCoordinator], GeolocationEvent):
@@ -39,10 +40,17 @@ class WoltMapPoint(CoordinatorEntity[WoltDataUpdateCoordinator], GeolocationEven
         self.order_id = order_id
         self.kind = kind
         self._attr_icon = "mdi:moped" if kind == "courier" else "mdi:storefront"
+
+    @property
+    def name(self) -> str:
+        """Venue pin: the venue. Courier: "שליח", plus the venue when several ride."""
         view = self._view
-        label = view.venue if view is not None and view.venue else "order"
-        # The venue pin is named after the venue alone; the courier keeps a prefix.
-        self._attr_name = label if kind == "venue" else f"Wolt courier {label}"
+        venue = view.venue if view is not None and view.venue else None
+        if self.kind == "venue":
+            return venue or "Wolt"
+        if venue and len(self.coordinator.data.views) > 1:
+            return f"{COURIER} {venue}"
+        return COURIER
 
     @property
     def _view(self) -> OrderView | None:
