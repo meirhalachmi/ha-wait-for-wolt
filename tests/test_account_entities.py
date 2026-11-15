@@ -138,6 +138,8 @@ async def test_one_order_rides_home_and_leaves_nothing_behind(hass, wolt):
     assert set(points(hass)) == {(A, "venue"), (A, "courier")}
     courier = points(hass)[(A, "courier")]
     assert courier.attributes["venue"] == "Pizza"
+    assert points(hass)[(A, "venue")].name == "Pizza"
+    assert courier.name == "Wolt courier Pizza"
     assert "never exposed" not in str(courier.attributes)
 
     # Courier leaves the venue: on the way even though Wolt still says pending.
