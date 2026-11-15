@@ -41,7 +41,8 @@ class WoltMapPoint(CoordinatorEntity[WoltDataUpdateCoordinator], GeolocationEven
         self._attr_icon = "mdi:moped" if kind == "courier" else "mdi:storefront"
         view = self._view
         label = view.venue if view is not None and view.venue else "order"
-        self._attr_name = f"Wolt {kind} {label}"
+        # The venue pin is named after the venue alone; the courier keeps a prefix.
+        self._attr_name = label if kind == "venue" else f"Wolt courier {label}"
 
     @property
     def _view(self) -> OrderView | None:

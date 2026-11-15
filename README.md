@@ -15,7 +15,7 @@
 > ```
 >
 > Upgrading deletes the per-purchase devices of earlier versions. See
-> [CHANGELOG](CHANGELOG.md) 0.2.0. The rest of this README describes upstream.
+> [CHANGELOG](CHANGELOG.md) 0.2.1. The rest of this README describes upstream.
 
 **Wait for Wolt** is an unofficial Home Assistant custom integration for
 tracking active Wolt deliveries. It creates automation-friendly sensors for an
