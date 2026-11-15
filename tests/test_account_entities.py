@@ -139,7 +139,7 @@ async def test_one_order_rides_home_and_leaves_nothing_behind(hass, wolt):
     courier = points(hass)[(A, "courier")]
     assert courier.attributes["venue"] == "Pizza"
     assert points(hass)[(A, "venue")].name == "Pizza"
-    assert courier.name == "Wolt courier Pizza"
+    assert courier.name == "שליח"
     assert "never exposed" not in str(courier.attributes)
 
     # Courier leaves the venue: on the way even though Wolt still says pending.
@@ -194,6 +194,9 @@ async def test_two_orders_aggregate_on_the_first_to_arrive(hass, wolt):
     )
     assert {kind for _, kind in points(hass)} == {"courier", "venue"}
     assert len(points(hass)) == 4
+    assert points(hass)[(A, "courier")].name == "שליח Pizza"
+    assert points(hass)[(B, "courier")].name == "שליח Sushi"
+    assert points(hass)[(B, "venue")].name == "Sushi"
 
     # Sushi arrives; everything moves to the pizza.
     wolt.orders = [summary(A, "Pizza"), summary(B, "Sushi", "DELIVERED")]
@@ -201,6 +204,7 @@ async def test_two_orders_aggregate_on_the_first_to_arrive(hass, wolt):
     assert hass.states.get("sensor.wolt_status").attributes["venue"] == "Pizza"
     assert hass.states.get("sensor.wolt_active_orders").state == "1"
     assert set(points(hass)) == {(A, "courier"), (A, "venue")}
+    assert points(hass)[(A, "courier")].name == "שליח"
 
 
 async def test_without_maps_no_positions_leave_the_integration(hass, wolt):

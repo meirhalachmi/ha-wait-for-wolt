@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Release numbers follow semantic major/minor/patch intent; prereleases use PEP 440
 spellings such as `0.1.0b1` so Home Assistant and Python tooling agree.
 
+## [0.2.2] — 2026-11-15
+
+- The courier map point is named "שליח" (courier), with the venue added only
+  while several purchases are active.
+
 ## [0.2.1] — 2026-11-15
 
 - The venue map point is named after the venue alone (no "Wolt venue" prefix).
